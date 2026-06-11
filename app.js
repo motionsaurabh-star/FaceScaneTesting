@@ -2167,46 +2167,39 @@ async function autoSendSms(record) {
   if (!record.parentPhone) return;
   if (record.waSent) return;
 
-  const slots = getSmsSlots();
-  if (!slots.length) return;
+  const activeSlotInfo = getActiveSlot();
+  if (!activeSlotInfo) return; // all slots exhausted
+
+  const { slot, idx } = activeSlotInfo;
+  const baseUrl = slot.url.trim().replace(/\/$/, '');
+  const user = slot.user || '';
+  const pass = slot.pass || '';
+  const msg  = 'Dear Parent, ' + record.name + ' has marked attendance today at ' + record.formattedTime + '. - Unacademy Gwalior';
 
   let formattedPhone = record.parentPhone.replace(/\D/g, '');
   if (formattedPhone.length === 10) formattedPhone = '+91' + formattedPhone;
   else if (!formattedPhone.startsWith('+')) formattedPhone = '+' + formattedPhone;
 
-  const msg = 'Dear Parent, ' + record.name + ' has marked attendance today at ' + record.formattedTime + '. - Unacademy Gwalior';
-
-  // Fail-based switching: try each slot until one succeeds
-  for (let i = 0; i < slots.length; i++) {
-    const slot = slots[i];
-    if (!slot.url) continue;
-    const baseUrl = slot.url.trim().replace(/\/$/, '');
-    try {
-      const resp = await fetch(baseUrl + '/3rdparty/v1/messages?skipPhoneValidation=true', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Basic ' + btoa((slot.user || '') + ':' + (slot.pass || '')),
-        },
-        body: JSON.stringify({ textMessage: { text: msg }, phoneNumbers: [formattedPhone] }),
-        signal: AbortSignal.timeout(8000),
-      });
-      if (resp.ok || resp.status === 202) {
-        incrementSmsCountForSlot(i);
-        updateSmsUsageDisplay();
-        markWaSent(record.id);
-        console.log('Auto SMS sent via Device ' + (i + 1) + ' to', record.name);
-        return; // success — stop trying
-      } else {
-        console.warn('Device ' + (i + 1) + ' SMS failed (status ' + resp.status + '), trying next...');
-        // fall through to next slot
-      }
-    } catch (e) {
-      console.warn('Device ' + (i + 1) + ' SMS error:', e.message, '— trying next...');
-      // fall through to next slot
+  try {
+    const resp = await fetch(baseUrl + '/3rdparty/v1/messages?skipPhoneValidation=true', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + btoa(user + ':' + pass),
+      },
+      body: JSON.stringify({ textMessage: { text: msg }, phoneNumbers: [formattedPhone] }),
+    });
+    if (resp.ok || resp.status === 202) {
+      incrementSmsCountForSlot(idx);
+      updateSmsUsageDisplay();
+      markWaSent(record.id);
+      console.log('Auto SMS sent via Device ' + (idx+1) + ' to', record.name);
+    } else {
+      console.error('Auto SMS failed:', resp.status);
     }
+  } catch(e) {
+    console.error('Auto SMS error:', e);
   }
-  console.error('All SMS slots failed for', record.name);
 }
 
 async function sendSmsAlert(recordId, phone, name, time, btn) {
