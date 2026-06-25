@@ -105,12 +105,7 @@
   width: 100vw;
   padding: 24px;
 }
-
-:fullscreen #attendance-camera-box,
-:-webkit-full-screen #attendance-camera-box {
-  width: min(85vh, 560px);
-  height: min(85vh, 560px);
-}
+/* No fullscreen circle resize — camera stays same size */
 
 /* ── Tablet responsive ── */
 @media (max-width: 1024px) {

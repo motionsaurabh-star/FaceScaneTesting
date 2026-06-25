@@ -3,7 +3,18 @@
 //  UPDATED: Bug fixes + new features
 // ============================================================
 
-// ─── Storage Keys ────────────────────────────────────────────
+// ─── Hardcoded SMS Gateway Devices ───────────────────────────
+// Edit this list to add/remove devices — changes here apply on all devices
+const HARDCODED_SMS_DEVICES = [
+  // { url: "http://192.168.1.100:8080", user: "admin", pass: "password", label: "Device 1 - BSNL SIM 1" },
+  // { url: "http://192.168.1.101:8080", user: "admin", pass: "password", label: "Device 2 - BSNL SIM 2" },
+  // { url: "http://192.168.1.102:8080", user: "admin", pass: "password", label: "Device 3 - BSNL SIM 3" },
+  // Uncomment and fill in your actual device details above
+];
+// If HARDCODED_SMS_DEVICES has entries, they will be used instead of localStorage devices
+// ─────────────────────────────────────────────────────────────
+
+
 const STORAGE_KEYS = {
   settings:     "face-attendance-settings",
   students:     "face-attendance-students",
@@ -24,7 +35,7 @@ const DEFAULT_SETTINGS = {
 
 // ─── Registration constants ───────────────────────────────────
 const REG_VIDEO_DURATION_MS   = 3000;
-const REG_FRAME_INTERVAL_MS   = 250; // increased from 90ms for performance
+const REG_FRAME_INTERVAL_MS   = 90;
 const REG_TARGET_EMBEDDINGS   = 10;
 const REG_MIN_EMBEDDINGS      = 3;
 const REG_MIN_FACE_FRACTION   = 0.08;
@@ -36,9 +47,13 @@ const REG_DETECTION_SCORE_MIN = 0.68;
 
 // ─── Angle definitions ───────────────────────────────────────
 const ANGLES = [
-  { key: "front", label: "😐 Front Face", icon: "😐", instruction: "Look straight at the camera" },
-  { key: "left",  label: "← Left Face",  icon: "←",  instruction: "Slowly turn your head to the LEFT" },
-  { key: "right", label: "Right Face →", icon: "→",  instruction: "Slowly turn your head to the RIGHT" },
+  { key: "front",      label: "😐 Front",       icon: "😐", instruction: "Look straight at the camera" },
+  { key: "left",       label: "← Left",          icon: "←",  instruction: "Slowly turn head to the LEFT" },
+  { key: "right",      label: "Right →",         icon: "→",  instruction: "Slowly turn head to the RIGHT" },
+  { key: "up",         label: "↑ Up",            icon: "↑",  instruction: "Tilt head slightly UP (for cap wearers)" },
+  { key: "down",       label: "↓ Down",          icon: "↓",  instruction: "Tilt head slightly DOWN (for hair over face)" },
+  { key: "tilt_left",  label: "↗ Tilt Left",    icon: "↗",  instruction: "Tilt head diagonally to upper-left" },
+  { key: "tilt_right", label: "↘ Tilt Right",   icon: "↘",  instruction: "Tilt head diagonally to upper-right" },
 ];
 
 // ─── Live attendance constants ────────────────────────────────
@@ -64,12 +79,12 @@ const state = {
 
   registerPhoto: null,
   registerDescriptors: null,
-  angleData: { front: null, left: null, right: null },
+  angleData: { front: null, left: null, right: null, up: null, down: null, tilt_left: null, tilt_right: null },
   currentAngleIndex: 0,
   isUpdateMode: false,
 
   // Upload-from-photo registration
-  uploadedAngleFiles: { front: null, left: null, right: null },
+  uploadedAngleFiles: { front: null, left: null, right: null, up: null, down: null, tilt_left: null, tilt_right: null },
 
   attendancePhoto: null,
   liveMatches: [],
@@ -153,11 +168,8 @@ function initApp() {
   showSection("home");
   setupOverlayCanvas();
   updateDashboardStats();
-  renderStudentsGrid();
-  renderAttendanceTable();
-  // Init unidentified badge after DOM is ready
+  // Don't render heavy lists on startup — render only when tab is opened
   setTimeout(updateUnidentifiedBadge, 0);
-  // Init auto-backup scheduler
   initAutoBackup();
   loadSmsGatewayUrl();
 }
@@ -291,7 +303,15 @@ function migrateAvgDescriptors() {
   if (changed) saveAvgDescriptors();
 }
 
-function saveData() {
+// ─── Debounced saveData ───────────────────────────────────────
+let _saveDataTimer = null;
+function saveData(immediate = false) {
+  if (immediate) { _doSaveData(); return; }
+  clearTimeout(_saveDataTimer);
+  _saveDataTimer = setTimeout(_doSaveData, 800);
+}
+
+function _doSaveData() {
   try {
     localStorage.setItem(STORAGE_KEYS.settings,     JSON.stringify(state.settings));
     localStorage.setItem(STORAGE_KEYS.students,     JSON.stringify(state.students));
@@ -299,18 +319,21 @@ function saveData() {
     localStorage.setItem(STORAGE_KEYS.trash,        JSON.stringify(state.trash));
     localStorage.setItem(STORAGE_KEYS.unidentified, JSON.stringify(state.unidentified));
     updateDashboardStats();
-    renderStudentsGrid();
-    renderAttendanceTable();
+    // Only re-render the currently visible tab
+    const active = state.activeSection;
+    if (active === "records") {
+      if (!dom.studentsListView?.classList.contains("hidden")) renderStudentsGrid();
+      else renderAttendanceTable();
+    }
+    if (active === "trash")        renderTrash();
+    if (active === "unidentified") renderUnidentifiedList();
   } catch (e) {
     console.error("saveData failed:", e);
-    // If quota exceeded, try without scanPhoto
     try {
       const attendanceLight = state.attendances.map(a => ({ ...a, scanPhoto: "" }));
       localStorage.setItem(STORAGE_KEYS.attendance, JSON.stringify(attendanceLight));
       localStorage.setItem(STORAGE_KEYS.students,   JSON.stringify(state.students));
       updateDashboardStats();
-      renderStudentsGrid();
-      renderAttendanceTable();
     } catch (e2) {
       console.error("saveData fallback also failed:", e2);
     }
@@ -341,6 +364,7 @@ function showSection(section) {
   if (state.scanLocked && section !== "attendance") {
     return; // locked — can't navigate away
   }
+  state.activeSection = section;
   dom.sections.forEach(el => el.classList.add("hidden"));
   document.getElementById(`section-${section}`)?.classList.remove("hidden");
   dom.tabs.forEach(t => t.classList.remove("nav-active"));
@@ -357,9 +381,22 @@ function showSection(section) {
     if (section !== "register") resetRegisterCaptureUi();
     if (section !== "attendance") resetAttendanceCaptureUi();
   }
-  if (section === "records") showStudentsList();
-  if (section === "trash")   renderTrash();
-  if (section === "unidentified") renderUnidentifiedList();
+  // Lazy render — only render when tab is actually opened
+  if (section === "records") {
+    requestAnimationFrame(async () => {
+      // Fetch fresh data from Google Sheet on every Records page open
+      if (typeof loadFromSheets === "function") {
+        try {
+          await loadFromSheets();
+        } catch(e) {
+          console.warn("Sheet fetch failed, using cached data:", e);
+        }
+      }
+      showStudentsList();
+    });
+  }
+  if (section === "trash")   requestAnimationFrame(() => renderTrash());
+  if (section === "unidentified") requestAnimationFrame(() => renderUnidentifiedList());
 }
 
 // ─── Camera core ──────────────────────────────────────────────
@@ -664,41 +701,46 @@ async function captureRegisterPhoto() {
   await captureCurrentAngle();
 }
 
+async function captureRegisterPhoto() {
+  await captureCurrentAngle();
+}
+
 function resetAllAngles() {
+  stopGuidedCapture();
   state.currentAngleIndex  = 0;
-  state.angleData          = { front: null, left: null, right: null };
+  state.angleData          = { front: null, left: null, right: null, up: null, down: null, tilt_left: null, tilt_right: null };
   state.registerDescriptors= null;
   state.registerPhoto      = null;
   state.regCollectedDescriptors = [];
   state.regCollectedPhotos = [];
   state.isUpdateMode       = false;
-  state.uploadedAngleFiles = { front: null, left: null, right: null };
-  for (const angle of ANGLES) {
-    const thumb = document.getElementById(`thumb-${angle.key}`);
+  state.uploadedAngleFiles = { front: null, left: null, right: null, up: null, down: null, tilt_left: null, tilt_right: null };
+
+  // Reset thumbnails
+  const icons = { front:"😐", left:"←", right:"→", up:"↑", down:"↓", tilt_left:"↗", tilt_right:"↘" };
+  for (const [key, icon] of Object.entries(icons)) {
+    const thumb = document.getElementById(`thumb-${key}`);
     if (thumb) {
-      thumb.innerHTML = `<span style="font-size:1.5rem;color:#475569;">${angle.icon}</span>`;
+      thumb.innerHTML = icon;
       thumb.style.borderColor = "";
       thumb.style.borderStyle = "dashed";
     }
   }
-  // Reset upload previews
-  for (const key of ["front","left","right"]) {
-    const up = document.getElementById(`upload-preview-${key}`);
-    if (up) up.innerHTML = `<span class="text-2xl">${key === "front" ? "😐" : key === "left" ? "←" : "→"}</span><span class="text-xs text-slate-500 mt-1">Tap to upload</span>`;
-  }
-  const instrEl = document.getElementById("angle-instruction");
-  if (instrEl) instrEl.textContent = "Start camera, then capture each angle one by one.";
-  dom.registerPreview.classList.add("hidden");
-  dom.registerPhotoPreview.removeAttribute("src");
-  const submitBtn = document.getElementById("register-submit-btn");
-  if (submitBtn) {
-    submitBtn.disabled = false;
-    submitBtn.textContent = "✅ Register Student";
-  }
-  updateAngleUI();
-  dom.registerStatus.textContent = "Angles reset. Start camera and capture again.";
-}
 
+  // Reset SVG ring
+  _showAlignedRing(false, 0);
+
+  // Restart guided capture if camera is already running
+  if (dom.registerVideo?.srcObject) {
+    dom.registerStatus.textContent = "Restarted — follow the guide again.";
+    startGuidedCapture();
+  } else {
+    dom.registerStatus.textContent = "Reset done. Start camera to begin.";
+    updateAngleUI();
+  }
+
+  dom.registerPreview?.classList.add("hidden");
+}
 function retakeRegisterPhoto() {
   resetAllAngles();
 }
@@ -922,8 +964,15 @@ async function registerStudent(event) {
   computeAndCacheAvgDescriptor(student);
   saveAvgDescriptors();
 
-  // ── FIX #1: Save first, THEN reset UI ────────────────────────
-  saveData();
+  saveData(true);
+
+  // ── Sync to Google Sheets ──────────────────────────────────
+  if (typeof syncStudentToSheets === "function") {
+    syncStudentToSheets(student).catch(e => console.warn("Sheet sync failed:", e));
+  }
+  if (typeof syncFaceDataToSheets === "function") {
+    syncFaceDataToSheets(student).catch(e => console.warn("Face sync failed:", e));
+  }
 
   // Reset form and UI after saving
   dom.registerForm.reset();
@@ -1446,18 +1495,27 @@ async function runLiveRecognition() {
 }
 
 function rankStudentsByMultiEmbedding(descriptor, dynThreshold) {
-  // FAST PATH: compare against one averaged descriptor per student (30x faster)
-  const ranked = state.students
-    .map(student => {
-      const avg = getAvgDescriptor(student);
-      if (!avg) return { student, distance: null };
-      return { student, distance: descriptorDistance(descriptor, avg) };
-    })
-    .filter(r => r.distance !== null)
-    .sort((a, b) => a.distance - b.distance);
+  // Use full individual embeddings only — most accurate
+  const withDescriptors = state.students.filter(s =>
+    Array.isArray(s.descriptors) && s.descriptors.length > 0
+  );
+  const legacyOnly = state.students.filter(s =>
+    !Array.isArray(s.descriptors) && Array.isArray(s.descriptor)
+  );
+  const ranked = [
+    ...withDescriptors.map(student => {
+      const distances = student.descriptors.map(emb => descriptorDistance(descriptor, emb));
+      const minDist   = Math.min(...distances);
+      return { student, distance: minDist };
+    }),
+    ...legacyOnly.map(student => ({
+      student,
+      distance: descriptorDistance(descriptor, student.descriptor),
+    })),
+  ].sort((a, b) => a.distance - b.distance);
 
   const noDescriptor = state.students
-    .filter(s => !getAvgDescriptor(s))
+    .filter(s => !Array.isArray(s.descriptors) && !Array.isArray(s.descriptor))
     .map(s => ({ student: s, distance: null }));
 
   return [...ranked, ...noDescriptor];
@@ -1945,6 +2003,10 @@ function sendWhatsAppToAll() {
 // ─── SMS Gateway Multi-Device Settings ───────────────────────
 // Each slot: { url, user, pass, label }
 function getSmsSlots() {
+  // Use hardcoded devices if defined in config
+  if (HARDCODED_SMS_DEVICES && HARDCODED_SMS_DEVICES.length > 0) {
+    return HARDCODED_SMS_DEVICES;
+  }
   return JSON.parse(localStorage.getItem('sms-gateway-slots') || '[]');
 }
 function saveSmsSlots(slots) {
@@ -1980,7 +2042,25 @@ function updateSmsSlot(idx, field, value) {
 
 function renderSmsSlots() {
   const container = document.getElementById('sms-gateway-slots');
+  const panel     = document.getElementById('sms-gateway-panel');
   if (!container) return;
+
+  // If hardcoded devices exist — hide manual UI, show info message
+  if (HARDCODED_SMS_DEVICES && HARDCODED_SMS_DEVICES.length > 0) {
+    container.innerHTML = `
+      <div class="bg-sky-500/10 border border-sky-500/30 rounded-2xl p-4 text-sm text-sky-300">
+        ✅ <strong>${HARDCODED_SMS_DEVICES.length} device(s)</strong> configured in code:<br>
+        <ul class="mt-2 space-y-1 text-slate-300">
+          ${HARDCODED_SMS_DEVICES.map((d, i) => `<li>📱 ${d.label || 'Device ' + (i+1)}</li>`).join('')}
+        </ul>
+        <p class="mt-2 text-xs text-slate-400">To change devices, edit HARDCODED_SMS_DEVICES in app.js on GitHub.</p>
+      </div>
+    `;
+    // Hide add device button
+    const addBtn = document.getElementById('add-sms-slot-btn');
+    if (addBtn) addBtn.style.display = 'none';
+    return;
+  }
   const slots = getSmsSlots();
   if (slots.length === 0) {
     container.innerHTML = '<p class="text-slate-500 text-sm text-center py-2">No devices added. Click "+ Add Device" to add one.</p>';
@@ -2289,48 +2369,58 @@ function renderStudentsGrid(searchQuery) {
   }
   if (noResults) noResults.classList.add("hidden");
 
-  filtered.forEach(student => {
-    const card = document.createElement("div");
-    card.className =
-      "bg-slate-900 border border-slate-700 hover:border-sky-400 rounded-3xl p-5 transition-all";
-    const embBadge = student.embeddingCount
-      ? `<div class="text-xs text-sky-400 mt-1">🧠 ${student.embeddingCount} face samples</div>` : "";
-    const angleInfo = student.angleData
-      ? Object.entries(student.angleData)
-          .filter(([, v]) => v)
-          .map(([k]) => `<span class="inline-block bg-emerald-500/10 text-emerald-400 text-xs px-2 py-0.5 rounded-lg">${k}</span>`)
-          .join("")
-      : "";
-    card.innerHTML = `
-      <img src="${escapeHtml(student.facePhoto||"")}"
-           class="w-full aspect-square object-cover rounded-3xl mb-4 bg-slate-800"
-           alt="${escapeHtml(student.name)}">
-      <div class="font-semibold text-lg">${escapeHtml(student.name)}</div>
-      <div class="flex justify-between text-sm mt-1 gap-4">
-        <span class="text-slate-400">Roll ${escapeHtml(student.roll)}</span>
-        <span class="font-medium">${escapeHtml(student.class)}</span>
-      </div>
-      ${embBadge}
-      ${angleInfo ? `<div class="flex gap-1 flex-wrap mt-2">${angleInfo}</div>` : ""}
-      <div class="text-xs text-slate-400 mt-4 space-y-1">
-        <div>📱 Student: ${escapeHtml(student.studentPhone||"-")}</div>
-        <div>👨‍👩‍👧 Parent: ${escapeHtml(student.parentPhone||"-")}</div>
-      </div>
-      <div class="flex gap-2 mt-4">
-        <button type="button"
-          class="flex-1 text-xs bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 px-3 py-2 rounded-2xl font-medium transition-colors"
-          onclick="openEditModal('${escapeHtml(student.id)}')">
-          ✏️ Edit
-        </button>
-        <button type="button"
-          class="flex-1 text-xs bg-red-500/10 hover:bg-red-500/20 text-red-400 px-3 py-2 rounded-2xl font-medium transition-colors"
-          onclick="deleteStudent('${escapeHtml(student.id)}')">
-          🗑️ Delete
-        </button>
-      </div>
-    `;
-    dom.studentsGrid.appendChild(card);
-  });
+  // Chunked rendering — render 20 at a time to keep UI responsive
+  const CHUNK = 20;
+  let idx = 0;
+  function renderChunk() {
+    const end = Math.min(idx + CHUNK, filtered.length);
+    const frag = document.createDocumentFragment();
+    for (; idx < end; idx++) {
+      const student = filtered[idx];
+      const card = document.createElement("div");
+      card.className = "bg-slate-900 border border-slate-700 hover:border-sky-400 rounded-3xl p-5 transition-all";
+      const embBadge = student.embeddingCount
+        ? `<div class="text-xs text-sky-400 mt-1">🧠 ${student.embeddingCount} face samples</div>` : "";
+      const angleInfo = student.angleData
+        ? Object.entries(student.angleData)
+            .filter(([, v]) => v)
+            .map(([k]) => `<span class="inline-block bg-emerald-500/10 text-emerald-400 text-xs px-2 py-0.5 rounded-lg">${k}</span>`)
+            .join("")
+        : "";
+      card.innerHTML = `
+        <img src="${escapeHtml(student.facePhoto||"")}"
+             class="w-full aspect-square object-cover rounded-3xl mb-4 bg-slate-800"
+             alt="${escapeHtml(student.name)}">
+        <div class="font-semibold text-lg">${escapeHtml(student.name)}</div>
+        <div class="flex justify-between text-sm mt-1 gap-4">
+          <span class="text-slate-400">Roll ${escapeHtml(student.roll)}</span>
+          <span class="font-medium">${escapeHtml(student.class)}</span>
+        </div>
+        ${embBadge}
+        ${angleInfo ? `<div class="flex gap-1 flex-wrap mt-2">${angleInfo}</div>` : ""}
+        <div class="text-xs text-slate-400 mt-4 space-y-1">
+          <div>📱 Student: ${escapeHtml(student.studentPhone||"-")}</div>
+          <div>👨‍👩‍👧 Parent: ${escapeHtml(student.parentPhone||"-")}</div>
+        </div>
+        <div class="flex gap-2 mt-4">
+          <button type="button"
+            class="flex-1 text-xs bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 px-3 py-2 rounded-2xl font-medium transition-colors"
+            onclick="openEditModal('${escapeHtml(student.id)}')">
+            ✏️ Edit
+          </button>
+          <button type="button"
+            class="flex-1 text-xs bg-red-500/10 hover:bg-red-500/20 text-red-400 px-3 py-2 rounded-2xl font-medium transition-colors"
+            onclick="deleteStudent('${escapeHtml(student.id)}')">
+            🗑️ Delete
+          </button>
+        </div>
+      `;
+      frag.appendChild(card);
+    }
+    dom.studentsGrid.appendChild(frag);
+    if (idx < filtered.length) requestAnimationFrame(renderChunk);
+  }
+  requestAnimationFrame(renderChunk);
 }
 
 function showAttendanceList() {
@@ -2403,63 +2493,69 @@ function renderAttendanceTable() {
     return;
   }
 
-  records.forEach(record => {
-    const row = document.createElement("tr");
-    row.className = "border-b border-slate-700 last:border-none hover:bg-slate-800/50";
-    const matchLabel = record.matchPercent !== null && record.matchPercent !== undefined
-      ? `${record.matchPercent}%` : "";
-    // FIX #4: WhatsApp sent status column
-    const waStatus = record.waSent
-      ? `<span class="text-emerald-400 text-xs font-semibold">✅ Sent</span>`
-      : `<span class="text-slate-500 text-xs">Not sent</span>`;
-    const profileBadge = record.profileStatus === "deleted"
-      ? `<span class="ml-1 text-xs bg-red-500/15 text-red-400 px-2 py-0.5 rounded-lg">Deleted Profile</span>`
-      : `<span class="ml-1 text-xs bg-emerald-500/15 text-emerald-400 px-2 py-0.5 rounded-lg">Active</span>`;
-    row.innerHTML = `
-      <td class="px-4 py-4 text-xs">${escapeHtml(record.formattedTime)}</td>
-      <td class="px-4 py-4 font-medium">${escapeHtml(record.name)}${matchLabel ? `<span class="ml-2 text-xs text-emerald-400">${matchLabel}</span>` : ""}</td>
-      <td class="px-4 py-4 text-sm">${escapeHtml(record.roll)}</td>
-      <td class="px-4 py-4 text-sm">${escapeHtml(record.class)}</td>
-      <td class="px-4 py-4">${profileBadge}</td>
-      <td class="px-4 py-4 text-center">${waStatus}</td>
-      <td class="px-4 py-4 text-right">
-        <div class="flex gap-2 justify-end">
-          <button type="button"
-            class="attendance-wa-btn text-emerald-400 text-xs font-medium px-3 py-2 bg-emerald-400/10 hover:bg-emerald-400/20 rounded-2xl"
-            data-record-id="${escapeHtml(record.id)}">
-            📤 WA
-          </button>
-          <button type="button"
-            class="attendance-del-btn text-red-400 text-xs font-medium px-3 py-2 bg-red-400/10 hover:bg-red-400/20 rounded-2xl"
-            data-record-id="${escapeHtml(record.id)}">
-            🗑️
-          </button>
-        </div>
-      </td>
-    `;
-    row.querySelector(".attendance-wa-btn")?.addEventListener("click", function() {
-      const rec = state.attendances.find(e => e.id === record.id);
-      if (rec) {
-        openWhatsappForRecord(rec);
-        markWaSent(rec.id);
-        // Immediately update status cell
-        const statusCell = row.querySelectorAll("td")[5];
-        if (statusCell) {
-          statusCell.innerHTML = `<span class="text-emerald-400 text-xs font-semibold">✅ Sent</span>`;
+  // Chunked rendering — render 30 rows at a time
+  const CHUNK = 30;
+  let idx = 0;
+  function renderChunk() {
+    const end = Math.min(idx + CHUNK, records.length);
+    const frag = document.createDocumentFragment();
+    for (; idx < end; idx++) {
+      const record = records[idx];
+      const row = document.createElement("tr");
+      row.className = "border-b border-slate-700 last:border-none hover:bg-slate-800/50";
+      const matchLabel = record.matchPercent !== null && record.matchPercent !== undefined
+        ? `${record.matchPercent}%` : "";
+      const waStatus = record.waSent
+        ? `<span class="text-emerald-400 text-xs font-semibold">✅ Sent</span>`
+        : `<span class="text-slate-500 text-xs">Not sent</span>`;
+      const profileBadge = record.profileStatus === "deleted"
+        ? `<span class="ml-1 text-xs bg-red-500/15 text-red-400 px-2 py-0.5 rounded-lg">Deleted Profile</span>`
+        : `<span class="ml-1 text-xs bg-emerald-500/15 text-emerald-400 px-2 py-0.5 rounded-lg">Active</span>`;
+      row.innerHTML = `
+        <td class="px-4 py-4 text-xs">${escapeHtml(record.formattedTime)}</td>
+        <td class="px-4 py-4 font-medium">${escapeHtml(record.name)}${matchLabel ? `<span class="ml-2 text-xs text-emerald-400">${matchLabel}</span>` : ""}</td>
+        <td class="px-4 py-4 text-sm">${escapeHtml(record.roll)}</td>
+        <td class="px-4 py-4 text-sm">${escapeHtml(record.class)}</td>
+        <td class="px-4 py-4">${profileBadge}</td>
+        <td class="px-4 py-4 text-center">${waStatus}</td>
+        <td class="px-4 py-4 text-right">
+          <div class="flex gap-2 justify-end">
+            <button type="button"
+              class="attendance-wa-btn text-emerald-400 text-xs font-medium px-3 py-2 bg-emerald-400/10 hover:bg-emerald-400/20 rounded-2xl"
+              data-record-id="${escapeHtml(record.id)}">
+              📤 WA
+            </button>
+            <button type="button"
+              class="attendance-del-btn text-red-400 text-xs font-medium px-3 py-2 bg-red-400/10 hover:bg-red-400/20 rounded-2xl"
+              data-record-id="${escapeHtml(record.id)}">
+              🗑️
+            </button>
+          </div>
+        </td>
+      `;
+      row.querySelector(".attendance-wa-btn")?.addEventListener("click", function() {
+        const rec = state.attendances.find(e => e.id === record.id);
+        if (rec) {
+          openWhatsappForRecord(rec);
+          markWaSent(rec.id);
+          const statusCell = row.querySelectorAll("td")[5];
+          if (statusCell) statusCell.innerHTML = `<span class="text-emerald-400 text-xs font-semibold">✅ Sent</span>`;
+          this.textContent = '✅ Sent';
+          this.style.background = 'rgba(16,185,129,0.2)';
+          this.style.color = '#10b981';
+          this.disabled = true;
+          this.style.cursor = 'default';
         }
-        // Immediately update the button itself to show sent
-        this.textContent = '✅ Sent';
-        this.style.background = 'rgba(16,185,129,0.2)';
-        this.style.color = '#10b981';
-        this.disabled = true;
-        this.style.cursor = 'default';
-      }
-    });
-    row.querySelector(".attendance-del-btn")?.addEventListener("click", () => {
-      deleteAttendanceRecord(record.id);
-    });
-    dom.attendanceTableBody.appendChild(row);
-  });
+      });
+      row.querySelector(".attendance-del-btn")?.addEventListener("click", () => {
+        deleteAttendanceRecord(record.id);
+      });
+      frag.appendChild(row);
+    }
+    dom.attendanceTableBody.appendChild(frag);
+    if (idx < records.length) requestAnimationFrame(renderChunk);
+  }
+  requestAnimationFrame(renderChunk);
 }
 
 // ─── TRASH / RECYCLE BIN ──────────────────────────────────────
@@ -2873,6 +2969,10 @@ function markUnidentifiedAttendance(entryId) {
   localStorage.setItem(STORAGE_KEYS.unidentified, JSON.stringify(state.unidentified));
   updateUnidentifiedBadge();
   renderUnidentifiedList();
+
+  // ── Auto send SMS to parent ────────────────────────────────
+  autoSendSms(record);
+
   showUnidentifiedSuccessPopup(record);
 }
 
@@ -3060,25 +3160,26 @@ async function captureEditAngle() {
   if (!video || !video.srcObject) { alert("Start camera first."); return; }
   const idx = _editAngle.index;
   if (idx >= _editAngleDefs.length) return;
-  const angleKey = _editAngleDefs[idx].key;
+  const angleDef = _editAngleDefs[idx];
+  const angleKey = angleDef.key;
   const status = document.getElementById("edit-register-status");
-  const btn    = document.getElementById("edit-capture-angle-btn");
-  if (status) status.textContent = `Scanning ${_editAngleDefs[idx].label}… Hold steady for 3 seconds.`;
+  const btn = document.getElementById("edit-capture-angle-btn");
+  if (status) status.textContent = `Scanning ${angleDef.label}… Hold steady.`;
   if (btn) btn.disabled = true;
   try {
     await ensureModels();
-    // Use the same multi-frame capture as main registration
-    const cvs = document.createElement("canvas");
-    const { descriptors, bestFrameUrl } = await captureAngleVideo(video, cvs, _editAngleDefs[idx]);
-    if (!descriptors || descriptors.length < REG_MIN_EMBEDDINGS) {
-      if (status) status.textContent = `Only ${descriptors?.length ?? 0} quality frames for ${_editAngleDefs[idx].label} (need ${REG_MIN_EMBEDDINGS}+). Try again.`;
+    // Use same multi-frame capture as main registration
+    const canvas = document.createElement("canvas");
+    const { descriptors, bestFrameUrl } = await captureAngleVideo(video, canvas, angleDef);
+    if (!descriptors || descriptors.length < 1) {
+      if (status) status.textContent = `No quality frames captured for ${angleDef.label}. Try again.`;
       if (btn) btn.disabled = false;
       return;
     }
     _editAngle.descriptors[angleKey] = descriptors;
     _editAngle.angleData[angleKey] = bestFrameUrl || "";
     _editAngle.index++;
-    if (status) status.textContent = `✅ ${_editAngleDefs[idx].label} captured (${descriptors.length} frames)!`;
+    if (status) status.textContent = `✅ ${angleDef.label} captured (${descriptors.length} frames)!`;
     updateEditAngleUI();
   } catch (err) {
     if (status) status.textContent = "Error: " + err.message;
@@ -3163,10 +3264,35 @@ function saveEditStudent() {
 }
 
 // ─── EXPORT CSV ───────────────────────────────────────────────
+// ─── Get currently filtered attendance records ────────────────
+function getFilteredAttendanceRecords() {
+  const search    = (document.getElementById('att-search')?.value || '').toLowerCase().trim();
+  const filterCls = document.getElementById('att-filter-class')?.value || '';
+  const filterDt  = document.getElementById('att-filter-date')?.value  || '';
+  const filterWa  = document.getElementById('att-filter-wa')?.value    || '';
+  const sort      = document.getElementById('att-sort')?.value || 'newest';
+
+  let records = state.attendances.filter(a => {
+    if (search && !((a.name||'').toLowerCase().includes(search) || (a.roll||'').toLowerCase().includes(search) || (a.class||'').toLowerCase().includes(search))) return false;
+    if (filterCls && a.class !== filterCls) return false;
+    if (filterDt  && a.dateKey !== filterDt) return false;
+    if (filterWa === 'sent'    && !a.waSent) return false;
+    if (filterWa === 'pending' &&  a.waSent) return false;
+    return true;
+  });
+
+  if (sort === 'newest') records.sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp));
+  else if (sort === 'oldest') records.sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
+  else if (sort === 'name') records.sort((a,b) => (a.name||'').localeCompare(b.name||''));
+  else if (sort === 'class') records.sort((a,b) => (a.class||'').localeCompare(b.class||''));
+  return records;
+}
+
 function exportAttendanceCSV() {
-  if (!state.attendances.length) { alert("No attendance records to export."); return; }
+  const records = getFilteredAttendanceRecords();
+  if (!records.length) { alert("No records to export (check your filters)."); return; }
   const headers = ["Date", "Time", "Student Name", "Roll No", "Class", "Student Phone", "Parent Phone", "Match %", "WA Sent"];
-  const rows = state.attendances.map(r => [
+  const rows = records.map(r => [
     r.dateLabel    || r.date,
     r.timeLabel    || "",
     r.name, r.roll, r.class,
@@ -3187,10 +3313,11 @@ function exportAttendanceCSV() {
 
 // ─── EXPORT PDF ───────────────────────────────────────────────
 function exportAttendancePDF() {
-  if (!state.attendances.length) { alert("No attendance records to export."); return; }
+  const records = getFilteredAttendanceRecords();
+  if (!records.length) { alert("No records to export (check your filters)."); return; }
   const instituteName = escapeHtml(state.settings.instituteName || "Unacademy Gwalior Branch");
   const exportDate    = formatDateTime(new Date());
-  const tableRows = state.attendances.map((r, i) => `
+  const tableRows = records.map((r, i) => `
     <tr style="background:${i % 2 === 0 ? "#f8fafc" : "#fff"};">
       <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;">${escapeHtml(r.dateLabel || r.date)}</td>
       <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;">${escapeHtml(r.timeLabel || "")}</td>
@@ -3213,7 +3340,7 @@ function exportAttendancePDF() {
   @media print{body{padding:0;}.no-print{display:none;}}
   </style></head><body>
   <div class="header"><h1>📋 Attendance Report</h1><p>${instituteName}</p></div>
-  <div class="meta"><span>📅 Exported: ${exportDate}</span><span>👥 Total Records: ${state.attendances.length}</span><span>🎓 Students: ${state.students.length}</span></div>
+  <div class="meta"><span>📅 Exported: ${exportDate}</span><span>👥 Total Records: ${records.length}</span><span>🎓 Students: ${state.students.length}</span></div>
   <table><thead><tr><th>Date</th><th>Time</th><th>Student</th><th>Roll No</th><th>Class</th><th>Match %</th><th>WA Sent</th></tr></thead>
   <tbody>${tableRows}</tbody></table>
   <div class="footer">Generated by FaceScan Attendance · ${exportDate}</div>

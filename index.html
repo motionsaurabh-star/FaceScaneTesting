@@ -193,7 +193,7 @@
         <div class="bg-slate-900 border border-slate-700 rounded-3xl p-5" id="sms-gateway-panel">
           <div class="flex items-center justify-between mb-1">
             <h3 class="font-semibold text-base flex items-center gap-2">📱 SMS Gateway Settings</h3>
-            <button onclick="addSmsGatewaySlot()" class="px-3 py-1.5 bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 rounded-xl text-xs font-semibold">+ Add Device</button>
+            <button id="add-sms-slot-btn" onclick="addSmsGatewaySlot()" class="px-3 py-1.5 bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 rounded-xl text-xs font-semibold">+ Add Device</button>
           </div>
           <p class="text-slate-400 text-sm mb-4">Add multiple devices — when one reaches 100 SMS/day limit, next device takes over automatically.</p>
           <div id="sms-gateway-slots" class="space-y-4"></div>
@@ -390,7 +390,7 @@
                 Start camera, then capture each angle one by one.
               </div>
 
-              <!-- Captured angle thumbnails (live camera) -->
+              <!-- Captured angle thumbnails -->
               <div class="flex gap-2 mb-3" id="angle-thumbnails">
                 <div class="flex-1 flex flex-col items-center gap-1">
                   <div id="thumb-front" class="w-full aspect-square rounded-2xl bg-slate-800 border-2 border-dashed border-slate-600 flex items-center justify-center text-2xl text-slate-600 overflow-hidden">😐</div>
@@ -406,7 +406,7 @@
                 </div>
               </div>
 
-              <!-- Camera box - circular like scan attendance -->
+              <!-- Camera box -->
               <div style="
                 width: min(72vw, 480px);
                 height: min(72vw, 480px);
@@ -443,7 +443,7 @@
                 Start the camera and capture 3 angles: Front → Left → Right.
               </p>
 
-              <!-- FIX #5: Upload from photos section -->
+              <!-- Upload from photos section -->
               <div class="mt-5 bg-slate-800/60 rounded-2xl p-4 border border-slate-700">
                 <p class="text-sm font-medium text-slate-300 mb-3">
                   📷 Or upload 3 photos (if student can't come in person)
@@ -499,7 +499,6 @@
       <!-- end REGISTER -->
 
       <!-- ══════════════════════════════════ SCAN ATTENDANCE ══ -->
-      <!-- FIX #7, #8, #9: Circular camera, clean UI, no clutter -->
       <div id="section-attendance" class="hidden">
         <div id="attendance-scan-section" class="flex flex-col items-center pt-4 pb-6">
 
