@@ -384,13 +384,8 @@ function showSection(section) {
   // Lazy render — only render when tab is actually opened
   if (section === "records") {
     requestAnimationFrame(async () => {
-      // Fetch fresh data from Google Sheet on every Records page open
       if (typeof loadFromSheets === "function") {
-        try {
-          await loadFromSheets();
-        } catch(e) {
-          console.warn("Sheet fetch failed, using cached data:", e);
-        }
+        try { await loadFromSheets(); } catch(e) { console.warn("Sheet fetch failed:", e); }
       }
       showStudentsList();
     });
@@ -2423,7 +2418,7 @@ function renderStudentsGrid(searchQuery) {
   requestAnimationFrame(renderChunk);
 }
 
-function showAttendanceList() {
+async function showAttendanceList() {
   dom.studentsListView.classList.add("hidden");
   dom.attendanceListView.classList.remove("hidden");
   dom.showAttendanceButton.classList.add("bg-sky-500", "text-white");
@@ -2434,6 +2429,11 @@ function showAttendanceList() {
   document.getElementById("export-pdf-btn")?.classList.remove("hidden");
   document.getElementById("wa-all-btn")?.classList.remove("hidden");
   document.getElementById("sms-split-btn")?.classList.remove("hidden");
+
+  // Fetch fresh attendance data from Google Sheet
+  if (typeof loadFromSheets === "function") {
+    try { await loadFromSheets(); } catch(e) { console.warn("Sheet fetch failed:", e); }
+  }
   renderAttendanceTable();
 }
 
