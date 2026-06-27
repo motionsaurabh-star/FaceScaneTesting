@@ -384,10 +384,15 @@ function showSection(section) {
   // Lazy render — only render when tab is actually opened
   if (section === "records") {
     requestAnimationFrame(async () => {
+      showStudentsList(); // show cached data immediately
       if (typeof loadFromSheets === "function") {
-        try { await loadFromSheets(); } catch(e) { console.warn("Sheet fetch failed:", e); }
+        try {
+          await loadFromSheets();
+          // re-render whichever view is active
+          if (!dom.studentsListView?.classList.contains("hidden")) renderStudentsGrid();
+          else renderAttendanceTable();
+        } catch(e) { console.warn("Sheet fetch failed:", e); }
       }
-      showStudentsList();
     });
   }
   if (section === "trash")   requestAnimationFrame(() => renderTrash());
@@ -2430,11 +2435,18 @@ async function showAttendanceList() {
   document.getElementById("wa-all-btn")?.classList.remove("hidden");
   document.getElementById("sms-split-btn")?.classList.remove("hidden");
 
-  // Fetch fresh attendance data from Google Sheet
-  if (typeof loadFromSheets === "function") {
-    try { await loadFromSheets(); } catch(e) { console.warn("Sheet fetch failed:", e); }
-  }
+  // Show cached data immediately
   renderAttendanceTable();
+
+  // Then fetch fresh from Sheet and re-render
+  if (typeof loadFromSheets === "function") {
+    try {
+      await loadFromSheets();
+      renderAttendanceTable(); // re-render with fresh data
+    } catch(e) {
+      console.warn("Sheet fetch failed:", e);
+    }
+  }
 }
 
 function populateAttendanceFilters() {
